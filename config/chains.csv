@@ -1,0 +1,13 @@
+name,n,consensus_ms,kind,note,source
+sui,128,390,claim,"Mysticeti. Finality claimed by Sui Foundation (Sep 2026). n from our epoch 1230 committee (Chainspect lists 125)",https://www.sui.io/blog/builders-guide-settlement-on-sui
+bnb,21,650,claim,"Parlia with fast finality: final once 2/3 of the epoch's 21 validators vote for a block and its child. 0.45 s blocks. 45 in the active set, 21 per epoch",https://www.bnbchain.org/en/blog/what-sub-second-finality-means-for-bsc-settlement
+ton,400,600,claim,"Catchain 2.0 (since Apr 2026), finality claimed by Pavel Durov. 400 validators in total, consensus runs in smaller validator groups",https://beincrypto.com/ton-finality-fastest-layer-1-blockchain/
+near,347,1200,measured,"Doomslug with 2/3 stake finality. Chainspect finality and validator count",https://chainspect.app/compare/icp-vs-near
+tron,27,57000,measured,"DPoS with 27 super representatives, solid after 19 of 27 confirm (19 blocks x 3 s). Chainspect",https://chainspect.app/compare/tron-vs-polkadot
+polkadot,500,30000,measured,"GRANDPA, 2/3. Chainspect finality. Active set 500 from 10 Nov 2026 (Ref. 1966)",https://chainspect.app/compare/tron-vs-polkadot
+cosmoshub,180,6000,measured,"CometBFT, instant finality per block. 'produces a block roughly every six seconds' (Hub weekly update, Aug 2026)",https://forum.cosmos.network/t/hub-weekly-update-13-august-21-2026/17255
+sei,40,368,measured,"Tendermint-based (Twin Turbo), instant finality per block. Chainspect 1 h block time and validator count",https://chainspect.app/compare/cosmos-vs-sei
+injective,45,600,measured,"CometBFT. 'consistently sub 0.6 seconds' after the Jul 2026 upgrade. Max validators 45",https://injective.valopers.com/parameters
+celestia,100,3000,measured,"CometBFT. Docs: about 3 s, happy path about 2.6 s. 100 validators",https://docs.celestia.org/operate/networks/mainnet-beta/
+monad,200,600,measured,"MonadBFT: full finality after 2 slots, mean block time 302 ms (Sep 2026). Active set capped at 200",https://docs.monad.xyz/ai/current-facts
+ethereum-sync,512,768000,spec,"Sync committee size. Finality after 2 epochs = 64 slots x 12 s (minimum)",
