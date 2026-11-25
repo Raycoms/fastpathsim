@@ -79,6 +79,10 @@ pub struct Votes {
 }
 
 impl Votes {
+    pub fn len(&self) -> usize {
+        self.sigs.len()
+    }
+
     pub fn add(&mut self, c: &Committee, msg: &[u8], signer: u16, sig: &[u8]) -> Option<Qc> {
         if self.done || signer as usize >= c.pks.len() {
             return None;

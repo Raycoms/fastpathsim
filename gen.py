@@ -35,7 +35,8 @@ def spread(n, weights):
 
 
 def ip(k, j):
-    """Address j in region k: 10.100.(4k + j // 240).(10 + j % 240)."""
+    """Address j in region k: 10.100.(4k + j // 240).(10 + j % 240). Validators use j < 720,
+    clients and providers j >= 720."""
     return f"10.100.{4 * k + j // 240}.{10 + j % 240}"
 
 
@@ -44,7 +45,7 @@ def tc_script(src, regions, owd, jitter):
         "#!/bin/sh",
         f"# Egress shaping for a node in {src}. The one-way delay is applied on the sender's side.",
         "set -e",
-        'BW="${BW:-1gbit}"',
+        'BW="${BW:-100mbit}"',
         "tc qdisc add dev eth0 root handle 1: htb default 99 r2q 10000",
         "tc class add dev eth0 parent 1: classid 1:1 htb rate $BW",
         "tc class add dev eth0 parent 1:1 classid 1:99 htb rate $BW",
@@ -83,6 +84,7 @@ def main():
     ap.add_argument("--provider-region", default="us-east-1")
     ap.add_argument("--jitter-ms", type=float, default=0, help="netem jitter, reorders packets if > 0")
     ap.add_argument("--n", type=int, help="override the chain's validator count")
+    ap.add_argument("--pairs", type=int, default=1, help="number of client/provider pairs (at most 120)")
     args = ap.parse_args()
 
     chain = {c["name"]: c for c in read_csv("chains.csv")}[args.chain]
@@ -94,14 +96,16 @@ def main():
 
     out = ROOT / "deploy" / args.chain
     (out / "tc").mkdir(parents=True, exist_ok=True)
-    (out / "results").mkdir(exist_ok=True)
+    (ROOT / "results").mkdir(exist_ok=True)
 
     nodes = []  # (service, role, region, ip)
     for k, r in enumerate(regions):
         for j in range(counts[r]):
             nodes.append((f"v{len(nodes)}", "validator", r, ip(k, j)))
-    for name, r, j in [("client", args.client_region, 950), ("provider", args.provider_region, 951)]:
-        nodes.append((name, name, r, ip(regions.index(r), j)))
+    assert max(counts.values()) <= 720 and args.pairs <= 120
+    for p in range(args.pairs):
+        for role, r, j in [("client", args.client_region, 720 + 2 * p), ("provider", args.provider_region, 721 + 2 * p)]:
+            nodes.append((f"{role}{p}", role, r, ip(regions.index(r), j)))
 
     with open(out / "peers.txt", "w") as f:
         f.writelines(f"{role} {addr}:{PORT}\n" for _, role, _, addr in nodes)
@@ -112,9 +116,10 @@ def main():
 name: fastsim-{args.chain}
 x-env: &env
   PEERS: /config/peers.txt
-  RESULTS: /results
+  RESULTS: /results/${{OUT:-}}
+  RUN: ${{RUN:-}}
   NETEM: ${{NETEM:-1}}
-  BW: ${{BW:-1gbit}}
+  BW: ${{BW:-100mbit}}
   WORKERS: ${{WORKERS:-1}}
   OPTION: ${{OPTION:-A}}
   TASKS: ${{TASKS:-200}}
@@ -128,7 +133,7 @@ x-node: &node
   cap_add: [NET_ADMIN]
   volumes:
     - ./:/config:ro
-    - ./results:/results
+    - ../../results:/results
 networks:
   sim:
     driver: bridge
@@ -138,9 +143,10 @@ networks:
 services:
 """
     for i, (name, role, r, addr) in enumerate(nodes):
-        compose += service(name, role, r, addr, f'\n      ID: "{i}"' if role == "validator" else "")
+        extra = f'\n      ID: "{i}"' if role == "validator" else f'\n      PAIR: "{name[len(role):]}"'
+        compose += service(name, role, r, addr, extra)
     (out / "docker-compose.yml").write_text(compose)
-    print(f"{args.chain}: {n} validators, {args.weights} weights {({r: c for r, c in counts.items() if c})} -> {out}")
+    print(f"{args.chain}: {n} validators, {args.pairs} pairs, {args.weights} weights {({r: c for r, c in counts.items() if c})} -> {out}")
 
 
 if __name__ == "__main__":

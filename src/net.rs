@@ -74,7 +74,7 @@ pub fn read_loop(mut r: OwnedReadHalf, f: impl Fn(Msg) + Send + 'static) {
 }
 
 /// Connects (retrying until the peer is up) and introduces ourselves.
-pub async fn connect(addr: SocketAddr, role: Role) -> (OwnedReadHalf, Tx) {
+pub async fn connect(addr: SocketAddr, role: Role, pair: usize) -> (OwnedReadHalf, Tx) {
     let stream = loop {
         match TcpStream::connect(addr).await {
             Ok(s) => break s,
@@ -82,6 +82,6 @@ pub async fn connect(addr: SocketAddr, role: Role) -> (OwnedReadHalf, Tx) {
         }
     };
     let (r, tx) = split(stream);
-    send(&tx, &encode(&Msg::Hello(role)));
+    send(&tx, &encode(&Msg::Hello(role, pair as u16)));
     (r, tx)
 }

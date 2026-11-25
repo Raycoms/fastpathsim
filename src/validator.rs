@@ -8,7 +8,6 @@ use crate::net::{self, encode, send, Tx};
 use blst::min_sig::SecretKey;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use tokio::net::TcpListener;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -21,7 +20,6 @@ enum Status {
 
 struct Escrow {
     status: Status,
-    pending: bool,
     /// The LockQC was verified once, so later messages with it skip the pairing check.
     qc_ok: bool,
     /// Option B justification: the result, withheld until a SettleQC exists.
@@ -40,28 +38,30 @@ pub struct Validator {
     sk: SecretKey,
     committee: Committee,
     state: Mutex<State>,
-    client: Mutex<Option<Tx>>,
-    provider: Mutex<Option<Tx>>,
+    /// Connections to clients and providers, by pair.
+    clients: Mutex<HashMap<u16, Tx>>,
+    providers: Mutex<HashMap<u16, Tx>>,
 }
 
 impl Validator {
-    fn to_both(&self, m: &Msg) {
+    fn to_pair(&self, pair: u16, m: &Msg) {
         let frame = encode(m);
-        for peer in [&self.client, &self.provider] {
-            if let Some(tx) = peer.lock().unwrap().as_ref() {
+        for peers in [&self.clients, &self.providers] {
+            if let Some(tx) = peers.lock().unwrap().get(&pair) {
                 send(tx, &frame);
             }
         }
     }
 
     fn new_escrow() -> Escrow {
-        Escrow { status: Status::Active, pending: false, qc_ok: false, y: None }
+        Escrow { status: Status::Active, qc_ok: false, y: None }
     }
 
     /// V-lockcheck: the client owns the coins, none is locked, and they cover a + g_p + g_c.
     fn coins_ok(&self, st: &State, t: &Task) -> bool {
-        t.client == self.cfg.client_pk
-            && !t.coins.is_empty()
+        !t.coins.is_empty()
+            && self.cfg.client_pks.get(t.pair()) == Some(&t.client)
+            && t.coins.iter().all(|o| (o >> 32) as usize == t.pair())
             && t.coins.iter().all(|o| !st.locked.contains(o))
             && t.coins.len() as u64 * COIN_VALUE >= t.amount + G_P + G_C
     }
@@ -92,7 +92,7 @@ impl Validator {
             st.locked.extend(task.coins.iter().copied());
         }
         let sig = bls_sign(&self.sk, &lock_msg(&id));
-        self.to_both(&Msg::LockVote { id, signer: self.me, sig });
+        self.to_pair(task.pair() as u16, &Msg::LockVote { id, signer: self.me, sig });
     }
 
     /// Option A: a LockQC signed by the client releases a + g_p.
@@ -101,33 +101,25 @@ impl Validator {
         if !ed_verify(&lock.task.client, &release_msg(&id), &sig) || !self.lock_ok(&id, &lock) {
             return;
         }
-        self.vote_settle(&id, lock.task.amount + G_P, None);
+        self.vote_settle(&lock.task, lock.task.amount + G_P, None);
     }
 
-    /// Option B: verify the provider's proof, then vote for a.
-    async fn on_proof(self: Arc<Self>, p: Proof) {
+    /// Option B: check the provider's signed result, then vote for a. VerifyProof is not emulated.
+    fn on_proof(&self, p: Proof) {
         let t = &p.lock.task;
         let id = t.id();
-        let ok = t.provider == self.cfg.provider_pk
+        // stake[p] != bottom: the pair's provider is the staked one.
+        let ok = self.cfg.provider_pks.get(t.pair()) == Some(&t.provider)
             && ed_verify(&t.provider, &proof_msg(&id, &p.y, &p.pi), &p.sig)
             && net::now_us() / 1000 <= t.deadline_ms
             && self.lock_ok(&id, &p.lock);
-        if !ok {
-            return;
+        if ok {
+            self.vote_settle(t, t.amount, Some(p.y));
         }
-        {
-            let mut st = self.state.lock().unwrap();
-            let e = st.escrows.entry(id).or_insert_with(Self::new_escrow);
-            if e.status != Status::Active || e.pending {
-                return;
-            }
-            e.pending = true;
-        }
-        self.state.lock().unwrap().escrows.get_mut(&id).unwrap().pending = false;
-        self.vote_settle(&id, t.amount, Some(p.y));
     }
 
-    fn vote_settle(&self, id: &Id, value: u64, y: Option<Vec<u8>>) {
+    fn vote_settle(&self, t: &Task, value: u64, y: Option<Vec<u8>>) {
+        let id = &t.id();
         {
             let mut st = self.state.lock().unwrap();
             let e = st.escrows.entry(*id).or_insert_with(Self::new_escrow);
@@ -138,7 +130,7 @@ impl Validator {
             e.y = y;
         }
         let sig = bls_sign(&self.sk, &settle_msg(id, value));
-        self.to_both(&Msg::SettleVote { id: *id, value, signer: self.me, sig });
+        self.to_pair(t.pair() as u16, &Msg::SettleVote { id: *id, value, signer: self.me, sig });
     }
 
     fn on_settled(&self, lock: LockQc, s: SettleQc) {
@@ -161,7 +153,7 @@ impl Validator {
             e.y.take()
         };
         if let Some(y) = y {
-            if let Some(tx) = self.client.lock().unwrap().as_ref() {
+            if let Some(tx) = self.clients.lock().unwrap().get(&(t.pair() as u16)) {
                 send(tx, &encode(&Msg::Result { id, y }));
             }
         }
@@ -171,9 +163,7 @@ impl Validator {
         match m {
             Msg::Lock { task, sig } => self.on_lock(task, sig),
             Msg::Release { lock, sig } => self.on_release(lock, sig),
-            Msg::Proof(p) => {
-                tokio::spawn(self.clone().on_proof(p));
-            }
+            Msg::Proof(p) => self.on_proof(p),
             Msg::Settled { lock, settle } => self.on_settled(lock, settle),
             _ => {}
         }
@@ -189,19 +179,17 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         committee: Committee::new(cfg.validators.len()),
         cfg,
         state: Mutex::default(),
-        client: Mutex::new(None),
-        provider: Mutex::new(None),
+        clients: Mutex::default(),
+        providers: Mutex::default(),
     });
     loop {
         let (stream, _) = listener.accept().await?;
         let v = v.clone();
         tokio::spawn(async move {
             let (mut r, tx) = net::split(stream);
-            let Ok(Msg::Hello(role)) = net::read_msg(&mut r).await else { return };
-            match role {
-                Role::Client => *v.client.lock().unwrap() = Some(tx),
-                Role::Provider => *v.provider.lock().unwrap() = Some(tx),
-            }
+            let Ok(Msg::Hello(role, pair)) = net::read_msg(&mut r).await else { return };
+            let peers = if role == Role::Client { &v.clients } else { &v.providers };
+            peers.lock().unwrap().insert(pair, tx);
             net::read_loop(r, move |m| v.handle(m));
         });
     }

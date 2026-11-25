@@ -23,15 +23,23 @@ pub struct Task {
 }
 
 impl Task {
-    pub fn agreed(i: u64, client: [u8; 32], provider: [u8; 32]) -> Self {
+    /// The i-th task of a client/provider pair. Negotiation happens before the protocol and is not
+    /// emulated, so client and provider both derive the agreed task from its index. The deadline is
+    /// far in the future.
+    pub fn agreed(pair: usize, i: u64, client: [u8; 32], provider: [u8; 32]) -> Self {
         Task {
-            commit: sha256(format!("query-{i}").as_bytes()),
+            commit: sha256(format!("query-{pair}-{i}").as_bytes()),
             client,
             provider,
             amount: 100,
             deadline_ms: u64::MAX,
-            coins: vec![i],
+            coins: vec![((pair as u64) << 32) | i],
         }
+    }
+
+    /// Genesis ownership: coin o belongs to the client of pair o >> 32.
+    pub fn pair(&self) -> usize {
+        (self.coins[0] >> 32) as usize
     }
 
     pub fn id(&self) -> Id {
@@ -68,7 +76,8 @@ pub enum Role {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum Msg {
-    Hello(Role),
+    /// The sender's role and pair index.
+    Hello(Role, u16),
     /// Client to validators.
     Lock { task: Task, sig: Vec<u8> },
     /// Validator to client and provider.
